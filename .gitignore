@@ -26,7 +26,6 @@ env*/
 
 # Output
 *.csv
-*.json
 
 # Mac
 .DS_Store
