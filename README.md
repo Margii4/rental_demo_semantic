@@ -1,5 +1,7 @@
 # 🏠 Rental Assistant Chatbot
 
+[🌐  Live Demo on Streamlit Cloud  ](https://rentaldemosemantic-nrovofg7ywfbtfappambgwf.streamlit.app/)  
+
 An intelligent rental assistant built with **Streamlit**, **OpenAI GPT**, **Pinecone**, and **LangChain**.  
 This app allows users to perform **semantic search** on real estate listings using natural language filters.
 
