@@ -47,17 +47,20 @@ def upsert_listings(listings):
     index.upsert(vectors=vectors)
     logger.info(f"Upserted {len(vectors)} vectors to Pinecone")
 
-def semantic_search(query_embedding, top_k=5):
+def semantic_search(query_embedding, top_k=5, filters=None):
     logger.info("semantic_search called")
     if not query_embedding or not isinstance(query_embedding, list) or not len(query_embedding):
         logger.error(f"Invalid query embedding: {query_embedding}")
         return []
     try:
-        res = index.query(
+        query_kwargs = dict(
             vector=query_embedding,
             top_k=top_k,
             include_metadata=True
         )
+        if filters:
+            query_kwargs['filter'] = filters
+        res = index.query(**query_kwargs)
         results = res.get("matches", []) if isinstance(res, dict) else getattr(res, "matches", [])
         logger.info(f"Semantic search returned {len(results)} results")
         return results

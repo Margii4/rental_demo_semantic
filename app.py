@@ -7,7 +7,7 @@ import json
 import re
 
 from llm_utils import get_embedding, generate_summary, llm_parse_listing, explain_match
-from pinecone_utils import upsert_listings, semantic_search
+from pinecone_utils import semantic_search
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s]: %(message)s",
@@ -17,7 +17,6 @@ logger = logging.getLogger("rental_assistant")
 
 st.set_page_config(page_title="Rental Assistant Bot", page_icon="🏠", layout="centered")
 
-#  UI LANGUAGES 
 LANG = {
     "English": {
         "select_lang": "🌍 Select language",
@@ -27,14 +26,12 @@ LANG = {
 This assistant helps you find the best rental offers in Italy using AI-powered semantic search.
 
 Step-by-step:
-1. Specify your wishes: District, pets, renovation, furnishing, price, and any other requirements.
+1. Specify your wishes: District, pets, furnishing, price, and any other requirements.
 2. Click "Search listings" — you'll see the most relevant results.
         """,
         "district": "District or Area",
         "pets": "Pets allowed?",
         "pets_options": ["Doesn't matter", "Yes", "No"],
-        "renovation": "Renovation/Condition",
-        "renovation_options": ["Doesn't matter", "Modern", "Basic", "Designer"],
         "furnished": "Furnished?",
         "furnished_options": ["Doesn't matter", "Yes", "No"],
         "price": "Price (e.g., 1000-1400, max 1300, 1000, flexible...)",
@@ -56,14 +53,12 @@ Step-by-step:
 Questo assistente ti aiuta a trovare le migliori offerte in affitto in Italia usando la ricerca semantica AI.
 
 Passaggi:
-1. Specifica le tue preferenze: Zona, animali, stato/ristrutturazione, arredamento, prezzo, altri desideri.
+1. Specifica le tue preferenze: Zona, animali, arredamento, prezzo, altri desideri.
 2. Clicca su “Cerca annunci” — vedrai le opzioni più rilevanti.
         """,
         "district": "Zona o Quartiere",
         "pets": "Animali ammessi?",
         "pets_options": ["Non importa", "Sì", "No"],
-        "renovation": "Stato/Ristrutturazione",
-        "renovation_options": ["Non importa", "Moderno", "Base", "Designer"],
         "furnished": "Arredato?",
         "furnished_options": ["Non importa", "Sì", "No"],
         "price": "Prezzo (es. 1000-1400, max 1200, flessibile...)",
@@ -79,9 +74,22 @@ Passaggi:
     }
 }
 
-# SESSION STATE FOR LANGUAGE 
+DEFAULT_FILTERS = {
+    "district": "",
+    "furnished": LANG["English"]["furnished_options"][0],
+    "pets": LANG["English"]["pets_options"][0],
+    "price": "",
+    "additional": ""
+}
+
 if "lang" not in st.session_state:
     st.session_state["lang"] = "English"
+
+if "filters" not in st.session_state:
+    st.session_state["filters"] = DEFAULT_FILTERS.copy()
+
+if "results" not in st.session_state:
+    st.session_state["results"] = None
 
 lang = st.radio(
     LANG["English"]["select_lang"],
@@ -97,12 +105,7 @@ st.title(tr["title"])
 with st.expander(tr["how_to"], expanded=True):
     st.markdown(tr["how_to_text"])
 
-# LOAD JSON LISTINGS 
-with open("parsers/my_listings.json", "r", encoding="utf-8") as f:
-    all_listings = json.load(f)
-
 def filter_by_price(price_filter, price_str):
-    """Supports ranges: 1000-1400, max 1300, 1200, flexible (True if match)"""
     if not price_filter or not price_str:
         return True
     price_val = None
@@ -134,15 +137,24 @@ def filter_by_price(price_filter, price_str):
         pass
     return True
 
-# SESSION STATE FOR RESULTS AND FILTERS 
-if "results" not in st.session_state:
-    st.session_state["results"] = None
-if "filters" not in st.session_state:
-    st.session_state["filters"] = {}
-
 def clear_all():
     st.session_state["results"] = None
-    st.session_state["filters"] = {}
+    st.session_state["filters"] = DEFAULT_FILTERS.copy()
+    st.rerun()
+
+def get_pinecone_filters(district, pets_radio, furnished_radio, tr):
+    filters = {}
+    if district:
+        filters["district"] = {"$eq": district}
+    if pets_radio == tr["pets_options"][1]:
+        filters["pets_allowed"] = {"$eq": True}
+    if pets_radio == tr["pets_options"][2]:
+        filters["pets_allowed"] = {"$eq": False}
+    if furnished_radio == tr["furnished_options"][1]:
+        filters["furnished"] = {"$eq": True}
+    if furnished_radio == tr["furnished_options"][2]:
+        filters["furnished"] = {"$eq": False}
+    return filters
 
 # UI: FILTER FORM 
 with st.form("search_form"):
@@ -150,115 +162,63 @@ with st.form("search_form"):
     with left_col:
         pets_radio = st.radio(
             tr["pets"], tr["pets_options"], horizontal=False,
-            index=tr["pets_options"].index(st.session_state["filters"].get("pets", tr["pets_options"][0]))
-        )
-        renovation_radio = st.radio(
-            tr["renovation"], tr["renovation_options"], horizontal=False,
-            index=tr["renovation_options"].index(st.session_state["filters"].get("renovation", tr["renovation_options"][0]))
+            index=tr["pets_options"].index(st.session_state["filters"].get("pets", tr["pets_options"][0])),
+            key="pets_radio"
         )
         furnished_radio = st.radio(
             tr["furnished"], tr["furnished_options"], horizontal=False,
-            index=tr["furnished_options"].index(st.session_state["filters"].get("furnished", tr["furnished_options"][0]))
+            index=tr["furnished_options"].index(st.session_state["filters"].get("furnished", tr["furnished_options"][0])),
+            key="furnished_radio"
         )
     with right_col:
-        district = st.text_input(tr["district"], value=st.session_state["filters"].get("district", ""))
-        price = st.text_input(tr["price"], value=st.session_state["filters"].get("price", ""))
-        additional = st.text_input(tr["additional"], value=st.session_state["filters"].get("additional", ""))
+        district = st.text_input(tr["district"], value=st.session_state["filters"].get("district", ""), key="district_input")
+        price = st.text_input(tr["price"], value=st.session_state["filters"].get("price", ""), key="price_input")
+        additional = st.text_input(tr["additional"], value=st.session_state["filters"].get("additional", ""), key="additional_input")
     col_submit, col_restart = st.columns([1, 1])
     with col_submit:
         submitted = st.form_submit_button(tr["search"])
     with col_restart:
-        restart = st.form_submit_button(tr["restart"])
-
-if restart:
-    clear_all()
-    st.rerun()
+        restart = st.form_submit_button(tr["restart"], on_click=clear_all)
 
 if submitted:
-    # Save filters
     st.session_state["filters"] = {
         "district": district,
-        "renovation": renovation_radio,
         "furnished": furnished_radio,
         "pets": pets_radio,
         "price": price,
         "additional": additional
     }
-    # Compile query
-    query_parts = []
-    if district: query_parts.append(f"district: {district}")
-    if pets_radio == tr["pets_options"][1]:
-        query_parts.append("pets allowed")
-    elif pets_radio == tr["pets_options"][2]:
-        query_parts.append("no pets")
-    if renovation_radio in tr["renovation_options"][1:]:
-        query_parts.append(f"renovation: {renovation_radio.lower()}")
-    if furnished_radio == tr["furnished_options"][1]:
-        query_parts.append("furnished")
-    elif furnished_radio == tr["furnished_options"][2]:
-        query_parts.append("not furnished")
-    if price:
-        query_parts.append(f"price: {price}")
-    if additional:
-        query_parts.append(f"{additional}")
-    query = ". ".join(query_parts)
-    logger.info(f"Search query: {query}")
 
-    # Local Filtering (speed)
-    filtered_listings = []
-    for data in all_listings:
-        if district and district.lower() not in (str(data.get('district', '')) + str(data.get('description', '')) + str(data.get('title', ''))).lower():
-            continue
-        if pets_radio == tr["pets_options"][1] and not data.get("pets_allowed", False):
-            continue
-        if pets_radio == tr["pets_options"][2] and data.get("pets_allowed", True):
-            continue
-        if renovation_radio != tr["renovation_options"][0] and renovation_radio.lower() not in str(data.get('description', '')).lower():
-            continue
-        if furnished_radio == tr["furnished_options"][1] and not data.get("furnished", False):
-            continue
-        if furnished_radio == tr["furnished_options"][2] and data.get("furnished", True):
-            continue
-        if not filter_by_price(price, data.get('price', '')):
-            continue
-        if additional and additional.lower() not in str(data.get('description', '')).lower():
-            continue
-        filtered_listings.append(data)
+    query = " ".join([
+        f"district: {district}" if district else "",
+        f"pets allowed" if pets_radio == tr["pets_options"][1] else "",
+        f"no pets" if pets_radio == tr["pets_options"][2] else "",
+        f"furnished" if furnished_radio == tr["furnished_options"][1] else "",
+        f"not furnished" if furnished_radio == tr["furnished_options"][2] else "",
+        f"price: {price}" if price else "",
+        f"{additional}" if additional else "",
+    ])
+    pinecone_filters = get_pinecone_filters(district, pets_radio, furnished_radio, tr)
+    query_embedding = get_embedding(query)
+    results = semantic_search(query_embedding, top_k=10, filters=pinecone_filters)
 
-    if not filtered_listings:
+    # Дополнительная ручная фильтрация по price и additional wishes
+    filtered_results = []
+    for r in results:
+        md = r.get("metadata", {})
+        # фильтр по price
+        if price and not filter_by_price(price, md.get('price', '')):
+            continue
+        # фильтр по additional (ищем в description + title)
+        if additional and additional.lower() not in (str(md.get('description', '')) + " " + str(md.get('title', ''))).lower():
+            continue
+        filtered_results.append(r)
+    if not filtered_results:
         st.warning(tr["warn_no_listings"])
         st.session_state["results"] = []
     else:
-        # Enrich Listings (LLM + Embedding)
-        listings = []
-        for data in filtered_listings:
-            full_desc = f"{data.get('description','')}\nPrice: {data.get('price','')}\nFurnished: {data.get('furnished','')}"
-            if "pets_allowed" in data:
-                full_desc += f"\nPets allowed: {data['pets_allowed']}"
-            llm_fields_raw = llm_parse_listing(full_desc, lang=lang)
-            try:
-                llm_fields = json.loads(llm_fields_raw)
-            except Exception as e:
-                logger.error(f"Failed to parse llm_fields for {data.get('url')}: {e}. Raw: {llm_fields_raw}")
-                llm_fields = {}
-            summary = generate_summary(full_desc, lang=lang)
-            data["id"] = data.get("url")
-            try:
-                embedding = get_embedding(full_desc)
-            except Exception as e:
-                logger.error(f"Failed to get embedding for {data.get('url')}: {e}")
-                embedding = []
-            listings.append({**data, **llm_fields, "summary": summary, "embedding": embedding})
+        st.session_state["results"] = filtered_results
 
-        logger.info(f"Final listings for upsert: {listings}")
-
-        # Semantic Search
-        query_embedding = get_embedding(query)
-        upsert_listings(listings)
-        results = semantic_search(query_embedding, top_k=5)
-        st.session_state["results"] = results
-
-#  RESULTS DISPLAY 
 if st.session_state.get("results") is not None:
     results = st.session_state["results"]
     if not results:
