@@ -123,16 +123,6 @@ PINECONE_HOST=https://your-pinecone-project.svc.region.pinecone.io
 
 ---
 
-## 📸 Screenshots
-
-Add screenshots of:
-- UI with filters  
-- Listings display  
-- “Why this result?” explanations  
-- CSV download confirmation
-
----
-
 ## 👤 Author
 
 **Margarita Viviers**  
