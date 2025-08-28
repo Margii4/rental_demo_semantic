@@ -1,69 +1,70 @@
-import os
-import logging
-from pinecone import Pinecone
+import os, json, requests
+from dotenv import load_dotenv
 
-logger = logging.getLogger("pinecone_utils")
+load_dotenv()
 
-PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
-PINECONE_INDEX = os.environ.get("PINECONE_INDEX")
+API_KEY = (os.getenv("PINECONE_API_KEY") or "").strip()
+INDEX_NAME = (os.getenv("PINECONE_INDEX") or "").strip()
+HOST = (os.getenv("PINECONE_HOST") or "").strip()
 
-if not PINECONE_API_KEY or not PINECONE_INDEX:
-    raise ValueError("PINECONE_API_KEY and PINECONE_INDEX must be set in the environment variables.")
+if not API_KEY or not INDEX_NAME or not HOST:
+    raise ValueError("PINECONE_API_KEY, PINECONE_INDEX and PINECONE_HOST must be set.")
 
-pc = Pinecone(api_key=PINECONE_API_KEY)
-index = pc.Index(PINECONE_INDEX)
+def _clean_host(h: str) -> str:
+    h = h.strip().replace(" ", "")
+    if "://" in h:
+        h = h.split("://", 1)[1]
+    h = h.split("/", 1)[0]
+    if "-UNKNOWN" in h:
+        h = h.split("-UNKNOWN", 1)[0]
+    return h
 
-def _sanitize_metadata(meta: dict) -> dict:
-    safe = {}
-    for k, v in meta.items():
+BASE = "https://" + _clean_host(HOST)
+HEADERS = {"Api-Key": API_KEY, "Content-Type": "application/json"}
+
+def _san(meta: dict) -> dict:
+    out = {}
+    for k, v in (meta or {}).items():
         if v is None:
-            safe[k] = ""
+            out[k] = ""
         elif isinstance(v, (str, bool, float, int)):
-            safe[k] = v
+            out[k] = v
         elif isinstance(v, list):
-            safe[k] = [str(x) for x in v]
+            out[k] = [str(x) for x in v]
         else:
-            safe[k] = str(v)
-    return safe
+            out[k] = str(v)
+    return out
 
 def upsert_listings(listings):
     vectors = []
-    for listing in listings:
-        if "embedding" not in listing or not listing["embedding"]:
-            logger.warning(f"Listing {listing.get('id')} has no embedding, skipping.")
+    for row in listings or []:
+        emb = row.get("embedding")
+        if not emb:
             continue
-        meta = dict(listing)
-        emb = meta.pop("embedding")
-        meta = _sanitize_metadata(meta)
-        vectors.append({
-            "id": str(meta.get("id")),
-            "values": emb,
-            "metadata": meta
-        })
-    logger.info(f"Prepared {len(vectors)} vectors for upsert")
+        meta = dict(row)
+        meta.pop("embedding", None)
+        meta = _san(meta)
+        vid = str(meta.get("id") or meta.get("url") or len(vectors) + 1)
+        vectors.append({"id": vid, "values": emb, "metadata": meta})
     if not vectors:
-        logger.warning("No data to upsert into Pinecone!")
-        return
-    index.upsert(vectors=vectors)
-    logger.info(f"Upserted {len(vectors)} vectors to Pinecone")
+        return {"upserted": 0}
+    r = requests.post(f"{BASE}/vectors/upsert", headers=HEADERS, data=json.dumps({"vectors": vectors}), timeout=30)
+    r.raise_for_status()
+    data = r.json()
+    return {"upserted": data.get("upserted_count") or data.get("upserted") or 0}
 
 def semantic_search(query_embedding, top_k=5, filters=None):
-    logger.info("semantic_search called")
-    if not query_embedding or not isinstance(query_embedding, list) or not len(query_embedding):
-        logger.error(f"Invalid query embedding: {query_embedding}")
+    if not isinstance(query_embedding, list) or not query_embedding:
         return []
-    try:
-        query_kwargs = dict(
-            vector=query_embedding,
-            top_k=top_k,
-            include_metadata=True
-        )
-        if filters:
-            query_kwargs['filter'] = filters
-        res = index.query(**query_kwargs)
-        results = res.get("matches", []) if isinstance(res, dict) else getattr(res, "matches", [])
-        logger.info(f"Semantic search returned {len(results)} results")
-        return results
-    except Exception as e:
-        logger.error(f"Pinecone semantic search error: {e}")
-        return []
+    payload = {
+        "vector": query_embedding,
+        "topK": int(top_k),
+        "includeValues": False,
+        "includeMetadata": True
+    }
+    if filters:
+        payload["filter"] = filters
+    r = requests.post(f"{BASE}/query", headers=HEADERS, data=json.dumps(payload), timeout=30)
+    r.raise_for_status()
+    data = r.json()
+    return data.get("matches", []) or []
