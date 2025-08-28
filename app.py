@@ -156,7 +156,6 @@ def get_pinecone_filters(district, pets_radio, furnished_radio, tr):
         filters["furnished"] = {"$eq": False}
     return filters
 
-# UI: FILTER FORM 
 with st.form("search_form"):
     left_col, right_col = st.columns([1,2])
     with left_col:
@@ -202,14 +201,14 @@ if submitted:
     query_embedding = get_embedding(query)
     results = semantic_search(query_embedding, top_k=10, filters=pinecone_filters)
 
-    # Дополнительная ручная фильтрация по price и additional wishes
+
     filtered_results = []
     for r in results:
         md = r.get("metadata", {})
-        # фильтр по price
+     
         if price and not filter_by_price(price, md.get('price', '')):
             continue
-        # фильтр по additional (ищем в description + title)
+     
         if additional and additional.lower() not in (str(md.get('description', '')) + " " + str(md.get('title', ''))).lower():
             continue
         filtered_results.append(r)
